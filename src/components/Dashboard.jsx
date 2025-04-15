@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState, useRef } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import Navbar from "./Navbar";
+import logo from '../assets/images/logo.png';
 
 function Dashboard() {
   const [user, setUser] = useState(null);
@@ -17,8 +18,21 @@ function Dashboard() {
   });
   const [showModal, setShowModal] = useState(false);
   const [expandedMeetings, setExpandedMeetings] = useState({});
-  const [selectedDateView, setSelectedDateView] = useState("upcoming");
+  const [selectedDateView, setSelectedDateView] = useState("today");
+  const [hidePastMeetings, setHidePastMeetings] = useState(true);
   const navigate = useNavigate();
+  const location = useLocation();
+  
+  const [showRedirectModal, setShowRedirectModal] = useState(false);
+  const [redirectUrl, setRedirectUrl] = useState("");
+  const [redirectTimer, setRedirectTimer] = useState(5);
+  const timerRef = useRef(null);
+  
+  const [copiedLink, setCopiedLink] = useState(null);
+
+  const isPastMeeting = (meeting) => {
+    return new Date(meeting.start_time) < new Date();
+  };
 
   useEffect(() => {
     const storedUser = localStorage.getItem("user");
@@ -44,7 +58,6 @@ function Dashboard() {
     fetchCountriesWithStates();
   }, []);
 
-  // Function to fetch all meetings
   const fetchMeetings = async () => {
     try {
       setLoading(true);
@@ -63,14 +76,12 @@ function Dashboard() {
     }
   };
 
-  // Function to create a new meeting
   const createMeeting = async (e) => {
     e.preventDefault();
     try {
       setLoading(true);
       setError(null);
       
-      // Combine date and time into UTC format
       const utcDateTime = new Date(`${meetingForm.date}T${meetingForm.time}Z`).toISOString();
       
       const response = await axios.post("https://api.xautrademeeting.com/create-meeting/", {
@@ -80,7 +91,6 @@ function Dashboard() {
       });
       
       if (response.data.success) {
-        // Clear form and refresh meetings list
         setMeetingForm({ topic: "", date: "", time: "", duration: 60 });
         setShowModal(false);
         fetchMeetings();
@@ -95,14 +105,72 @@ function Dashboard() {
     }
   };
 
-  // Load meetings when component mounts
   useEffect(() => {
     if (user) {
       fetchMeetings();
     }
   }, [user]);
 
-  // Handle form input changes
+  useEffect(() => {
+    if (showRedirectModal && redirectTimer > 0) {
+      timerRef.current = setTimeout(() => {
+        setRedirectTimer(redirectTimer - 1);
+      }, 1000);
+    } else if (showRedirectModal && redirectTimer === 0) {
+      window.location.href = redirectUrl;
+    }
+
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, [showRedirectModal, redirectTimer, redirectUrl]);
+
+  useEffect(() => {
+    let timeout;
+    if (copiedLink) {
+      timeout = setTimeout(() => {
+        setCopiedLink(null);
+      }, 2000);
+    }
+    return () => clearTimeout(timeout);
+  }, [copiedLink]);
+
+  const handleMeetingRedirect = (url, e) => {
+    e.preventDefault();
+    setRedirectUrl(url);
+    setRedirectTimer(5);
+    setShowRedirectModal(true);
+  };
+
+  const generateShareableUrl = (meeting, type) => {
+    const meetingUrl = type === 'join' ? meeting.join_url : (meeting.formatted_info?.host_url || meeting.start_url);
+    return meetingUrl;
+  };
+
+  const generateDashboardShareLink = () => {
+    return "https://xautrademeeting.com/dashboard";
+  };
+
+  const handleCopyLink = (meeting, type, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    let shareableUrl;
+    if (type === 'dashboard') {
+      shareableUrl = generateDashboardShareLink();
+    } else {
+      shareableUrl = generateShareableUrl(meeting, type);
+    }
+    
+    navigator.clipboard.writeText(shareableUrl).then(() => {
+      setCopiedLink(`${meeting.id}-${type}`);
+    }).catch(err => {
+      console.error('Could not copy text: ', err);
+    });
+  };
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setMeetingForm({
@@ -111,7 +179,6 @@ function Dashboard() {
     });
   };
 
-  // Format date for display
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', { 
@@ -124,7 +191,6 @@ function Dashboard() {
     });
   };
 
-  // Format UTC time to local time
   const formatUTCToLocal = (utcDateString) => {
     const date = new Date(utcDateString);
     return date.toLocaleString('en-US', {
@@ -139,7 +205,6 @@ function Dashboard() {
     }) + ' (UTC)';
   };
 
-  // Toggle meeting expansion
   const toggleMeetingExpansion = (meetingId) => {
     setExpandedMeetings(prev => ({
       ...prev,
@@ -147,40 +212,33 @@ function Dashboard() {
     }));
   };
 
-  // Filter meetings based on selected date view
   const filterMeetings = () => {
     const now = new Date();
+    const todayStart = new Date(now.setHours(0, 0, 0, 0));
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
     
-    switch (selectedDateView) {
-      case 'upcoming':
-        return meetings.filter(meeting => new Date(meeting.start_time) >= now);
-      case 'past':
-        return meetings.filter(meeting => new Date(meeting.start_time) < now);
-      case 'today':
-        const todayStart = new Date(now.setHours(0, 0, 0, 0));
-        const todayEnd = new Date(now);
-        todayEnd.setHours(23, 59, 59, 999);
-        return meetings.filter(meeting => {
-          const meetingDate = new Date(meeting.start_time);
-          return meetingDate >= todayStart && meetingDate <= todayEnd;
-        });
-      case 'week':
-        const weekStart = new Date(now);
-        weekStart.setDate(now.getDate() - now.getDay());
-        weekStart.setHours(0, 0, 0, 0);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        weekEnd.setHours(23, 59, 59, 999);
-        return meetings.filter(meeting => {
-          const meetingDate = new Date(meeting.start_time);
-          return meetingDate >= weekStart && meetingDate <= weekEnd;
-        });
-      default:
-        return meetings;
+    let filtered = meetings;
+    
+    if (selectedDateView === "today") {
+      filtered = filtered.filter(meeting => {
+        const meetingDate = new Date(meeting.start_time);
+        return meetingDate >= todayStart && meetingDate <= todayEnd;
+      });
+    } else {
+      filtered = filtered.filter(meeting => {
+        const meetingDate = new Date(meeting.start_time);
+        return meetingDate >= todayStart;
+      });
     }
+    
+    if (hidePastMeetings) {
+      filtered = filtered.filter(meeting => !isPastMeeting(meeting));
+    }
+    
+    return filtered;
   };
 
-  // Group meetings by date (year-month-day)
   const groupMeetingsByDate = () => {
     const filtered = filterMeetings();
     const grouped = {};
@@ -204,23 +262,18 @@ function Dashboard() {
     return grouped;
   };
 
-  // Match country and state
   const userCountry = countries.find((c) => c.id === user?.country_id);
   const userState = userCountry?.states.find((s) => s.id === user?.state_id);
 
   const groupedMeetings = groupMeetingsByDate();
-  
-  // Get current date in YYYY-MM-DD format for date input min value
   const today = new Date().toISOString().split('T')[0];
 
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-black to-gray-900">
-      {/* Navbar */}
       <Navbar user={user} setUser={setUser} />
       
       <div className="flex-grow p-2 sm:p-4 mt-16">
         <div className="flex flex-col gap-4">
-          {/* User Info Card - Small welcome back card */}
           <div className="bg-black rounded-lg shadow-md p-3 max-w-sm mx-auto w-full border border-yellow-600">
             <h3 className="text-sm sm:text-base font-bold text-yellow-500 mb-2">Welcome Back!</h3>
             
@@ -256,40 +309,38 @@ function Dashboard() {
             </div>
           </div>
           
-          {/* Meetings Management Card - Full width separate card */}
           <div className="bg-black rounded-lg shadow-md p-3 sm:p-4 w-full border border-yellow-600">
             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-3 space-y-2 sm:space-y-0">
-              <h3 className="text-sm sm:text-lg font-bold text-yellow-500">Your Meetings</h3>
-              
-              <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
-                {/* Date View Selector */}
-                <div className="flex text-xs bg-gray-900 rounded-md p-1">
-                  <button
-                    onClick={() => setSelectedDateView('upcoming')}
-                    className={`px-2 py-1 rounded ${selectedDateView === 'upcoming' ? 'bg-yellow-600 text-black' : 'text-yellow-400 hover:bg-gray-800'}`}
-                  >
-                    Upcoming
-                  </button>
-                  <button
-                    onClick={() => setSelectedDateView('today')}
-                    className={`px-2 py-1 rounded ${selectedDateView === 'today' ? 'bg-yellow-600 text-black' : 'text-yellow-400 hover:bg-gray-800'}`}
-                  >
-                    Today
-                  </button>
-                  <button
-                    onClick={() => setSelectedDateView('week')}
-                    className={`px-2 py-1 rounded ${selectedDateView === 'week' ? 'bg-yellow-600 text-black' : 'text-yellow-400 hover:bg-gray-800'}`}
-                  >
-                    This Week
-                  </button>
-                  <button
-                    onClick={() => setSelectedDateView('past')}
-                    className={`px-2 py-1 rounded ${selectedDateView === 'past' ? 'bg-yellow-600 text-black' : 'text-yellow-400 hover:bg-gray-800'}`}
-                  >
-                    Past
-                  </button>
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm sm:text-lg font-bold text-yellow-500">
+                    {selectedDateView === "today" ? "Today's Meetings" : "Upcoming Meetings"}
+                  </h3>
+                  <div className="relative inline-block w-10 mr-2 align-middle select-none">
+                    <input 
+                      type="checkbox" 
+                      name="toggle" 
+                      id="toggle"
+                      checked={selectedDateView === "upcoming"}
+                      onChange={() => setSelectedDateView(selectedDateView === "today" ? "upcoming" : "today")}
+                      className="toggle-checkbox absolute block w-6 h-6 rounded-full bg-yellow-500 border-4 appearance-none cursor-pointer transition-transform"
+                    />
+                    <label 
+                      htmlFor="toggle" 
+                      className="toggle-label block overflow-hidden h-6 rounded-full bg-gray-700 cursor-pointer"
+                    ></label>
+                  </div>
                 </div>
                 
+                <button 
+                  onClick={() => setHidePastMeetings(!hidePastMeetings)}
+                  className={`text-xs px-2 py-1 rounded ${hidePastMeetings ? 'bg-gray-800 text-yellow-400' : 'bg-yellow-600 text-black'}`}
+                >
+                  {hidePastMeetings ? 'Show Ended' : 'Hide Ended'}
+                </button>
+              </div>
+              
+              <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
                 <button 
                   onClick={() => setShowModal(true)} 
                   className="bg-yellow-600 hover:bg-yellow-500 text-black text-xs sm:text-sm font-medium py-1 px-2 sm:py-2 sm:px-4 rounded-md transition"
@@ -299,7 +350,6 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* Meetings List */}
             <div>
               {loading ? (
                 <div className="text-center py-4">
@@ -320,6 +370,7 @@ function Dashboard() {
                           fill="none" 
                           stroke="currentColor" 
                           viewBox="0 0 24 24"
+                          xmlns="http://www.w3.org/2000/svg"
                         >
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
                         </svg>
@@ -334,42 +385,111 @@ function Dashboard() {
                                 <th className="px-2 py-1 sm:px-3 sm:py-2 text-left text-xs font-medium text-yellow-500 uppercase tracking-wider">Time (UTC)</th>
                                 <th className="px-2 py-1 sm:px-3 sm:py-2 text-left text-xs font-medium text-yellow-500 uppercase tracking-wider">Join URL</th>
                                 <th className="px-2 py-1 sm:px-3 sm:py-2 text-left text-xs font-medium text-yellow-500 uppercase tracking-wider">Host URL</th>
+                                <th className="px-2 py-1 sm:px-3 sm:py-2 text-left text-xs font-medium text-yellow-500 uppercase tracking-wider">Share</th>
                               </tr>
                             </thead>
                             <tbody className="bg-black divide-y divide-yellow-900">
                               {dateMeetings.map((meeting) => (
-                                <tr key={meeting.id} className="hover:bg-gray-900">
-                                  <td className="px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm font-medium text-yellow-200">{meeting.topic}</td>
+                                <tr 
+                                  key={meeting.id} 
+                                  className={`hover:bg-gray-900 ${isPastMeeting(meeting) ? 'opacity-70 grayscale' : ''}`}
+                                >
+                                  <td className="px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm font-medium text-yellow-200">
+                                    {meeting.topic}
+                                    {isPastMeeting(meeting) && (
+                                      <span className="ml-2 text-xs text-yellow-500">(Ended)</span>
+                                    )}
+                                  </td>
                                   <td className="px-2 py-1 sm:px-3 sm:py-2 text-xs text-yellow-300">
                                     {formatUTCToLocal(meeting.start_time)}
                                   </td>
                                   <td className="px-2 py-1 sm:px-3 sm:py-2 text-xs">
-                                    <a 
-                                      href={meeting.join_url} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center text-yellow-400 hover:text-yellow-300 hover:underline"
-                                    >
-                                      <span className="hidden sm:inline mr-1">Join Meeting</span>
-                                      <span className="sm:hidden">Join</span>
-                                      <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                      </svg>
-                                    </a>
+                                    <div className="flex items-center space-x-2">
+                                      {isPastMeeting(meeting) ? (
+                                        <span className="inline-flex items-center text-yellow-600 opacity-50 cursor-not-allowed">
+                                          <span className="hidden sm:inline mr-1">Join Meeting</span>
+                                          <span className="sm:hidden">Join</span>
+                                          <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          </svg>
+                                        </span>
+                                      ) : (
+                                        <a 
+                                          href="#"
+                                          onClick={(e) => handleMeetingRedirect(meeting.join_url, e)}
+                                          className="inline-flex items-center text-yellow-400 hover:text-yellow-300 hover:underline"
+                                        >
+                                          <span className="hidden sm:inline mr-1">Join Meeting</span>
+                                          <span className="sm:hidden">Join</span>
+                                          <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          </svg>
+                                        </a>
+                                      )}
+                                      <button
+                                        onClick={(e) => handleCopyLink(meeting, 'join', e)}
+                                        className={`${isPastMeeting(meeting) ? 'text-yellow-600' : 'text-yellow-500 hover:text-yellow-400'} p-1 rounded-full`}
+                                        title="Copy join link"
+                                      >
+                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                        </svg>
+                                      </button>
+                                      {copiedLink === `${meeting.id}-join` && (
+                                        <span className="text-xs text-green-400 animate-pulse">Copied!</span>
+                                      )}                                      
+                                    </div>
                                   </td>
                                   <td className="px-2 py-1 sm:px-3 sm:py-2 text-xs">
-                                    <a 
-                                      href={meeting.formatted_info?.host_url || meeting.start_url} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center text-yellow-400 hover:text-yellow-300 hover:underline"
+                                    <div className="flex items-center space-x-2">
+                                      {isPastMeeting(meeting) ? (
+                                        <span className="inline-flex items-center text-yellow-600 opacity-50 cursor-not-allowed">
+                                          <span className="hidden sm:inline mr-1">Host Meeting</span>
+                                          <span className="sm:hidden">Host</span>
+                                          <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          </svg>
+                                        </span>
+                                      ) : (
+                                        <a 
+                                          href="#"
+                                          onClick={(e) => handleMeetingRedirect(meeting.formatted_info?.host_url || meeting.start_url, e)}
+                                          className="inline-flex items-center text-yellow-400 hover:text-yellow-300 hover:underline"
+                                        >
+                                          <span className="hidden sm:inline mr-1">Host Meeting</span>
+                                          <span className="sm:hidden">Host</span>
+                                          <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          </svg>
+                                        </a>
+                                      )}
+                                      <button
+                                        onClick={(e) => handleCopyLink(meeting, 'host', e)}
+                                        className={`${isPastMeeting(meeting) ? 'text-yellow-600' : 'text-yellow-500 hover:text-yellow-400'} p-1 rounded-full`}
+                                        title="Copy host link"
+                                      >
+                                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                        </svg>
+                                      </button>
+                                      {copiedLink === `${meeting.id}-host` && (
+                                        <span className="text-xs text-green-400 animate-pulse">Copied!</span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-1 sm:px-3 sm:py-2 text-xs">
+                                    <button
+                                      onClick={(e) => handleCopyLink(meeting, 'dashboard', e)}
+                                      className={`${isPastMeeting(meeting) ? 'text-yellow-600' : 'text-yellow-500 hover:text-yellow-400'} p-1 rounded-full`}
+                                      title="Copy dashboard share link"
                                     >
-                                      <span className="hidden sm:inline mr-1">Host Meeting</span>
-                                      <span className="sm:hidden">Host</span>
-                                      <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
                                       </svg>
-                                    </a>
+                                    </button>
+                                    {copiedLink === `${meeting.id}-dashboard` && (
+                                      <span className="text-xs text-green-400 animate-pulse ml-1">Copied!</span>
+                                    )}
                                   </td>
                                 </tr>
                               ))}
@@ -382,15 +502,13 @@ function Dashboard() {
                 </div>
               ) : (
                 <div className="text-center py-4 bg-gray-900 rounded">
-                  <svg className="h-8 w-8 sm:h-12 sm:w-12 text-yellow-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-8 w-8 sm:h-12 sm:w-12 text-yellow-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                   </svg>
                   <p className="mt-2 text-xs sm:text-sm text-yellow-400">
-                    {selectedDateView === 'upcoming' ? 'No upcoming meetings scheduled.' :
-                     selectedDateView === 'today' ? 'No meetings scheduled for today.' :
-                     selectedDateView === 'week' ? 'No meetings scheduled for this week.' :
-                     selectedDateView === 'past' ? 'No past meetings found.' :
-                     'No meetings found.'}
+                    {selectedDateView === "today" 
+                      ? "No meetings scheduled for today." 
+                      : "No upcoming meetings scheduled."}
                   </p>
                   <button 
                     onClick={() => setShowModal(true)} 
@@ -402,7 +520,6 @@ function Dashboard() {
               )}
             </div>
 
-            {/* Refresh Button */}
             <div className="mt-3 text-right">
               <button 
                 onClick={fetchMeetings} 
@@ -416,7 +533,6 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* Modal for Creating Meeting */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-75">
           <div className="relative bg-black rounded-lg shadow-xl w-full max-w-md mx-auto border border-yellow-600">
@@ -427,7 +543,7 @@ function Dashboard() {
                   onClick={() => setShowModal(false)}
                   className="text-yellow-400 hover:text-yellow-300"
                 >
-                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
@@ -463,7 +579,7 @@ function Dashboard() {
                         style={{ colorScheme: 'dark' }}
                       />
                       <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                        <svg className="h-4 w-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className="h-4 w-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                         </svg>
                       </div>
@@ -482,7 +598,7 @@ function Dashboard() {
                         style={{ colorScheme: 'dark' }}
                       />
                       <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                        <svg className="h-4 w-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg className="h-4 w-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                       </div>
@@ -508,6 +624,39 @@ function Dashboard() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRedirectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-90">
+          <div className="bg-black rounded-lg shadow-xl w-full max-w-md mx-auto border border-yellow-600 text-center p-8">
+            <div className="flex justify-center mb-6">
+              <img src={logo} alt="Company Logo" className="h-20 sm:h-24" />
+            </div>
+            
+            <h3 className="text-lg sm:text-xl font-semibold text-yellow-500 mb-4">
+              Preparing Your Meeting
+            </h3>
+            <p className="text-yellow-300 text-sm mb-6">
+              You will be redirected to your meeting in {redirectTimer} seconds...
+            </p>
+            
+            <div className="w-full bg-gray-800 rounded-full h-2.5">
+              <div 
+                className="bg-yellow-600 h-2.5 rounded-full transition-all duration-1000 ease-in-out" 
+                style={{ width: `${(5 - redirectTimer) * 20}%` }}
+              ></div>
+            </div>
+            
+            <div className="mt-8">
+              <button
+                onClick={() => window.location.href = redirectUrl}
+                className="bg-yellow-600 hover:bg-yellow-500 text-black text-sm font-medium py-2 px-4 rounded transition"
+              >
+                Start Now
+              </button>
             </div>
           </div>
         </div>
