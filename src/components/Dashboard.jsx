@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { QRCodeSVG } from 'qrcode.react';
 import html2canvas from 'html2canvas';
+import CryptoJS from 'crypto-js';
 import Navbar from "./Navbar";
 import logo from '../assets/images/logo.png';
 
@@ -36,11 +37,44 @@ function Dashboard() {
     url: "",
     type: "",
     topic: "",
-    meetingId: null
+    meetingId: null,
+    requiresPassword: false
   });
 
-  // Create ref for the QR modal
+  // Password protection states
+  const [hostPassword, setHostPassword] = useState("");
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [currentProtectedUrl, setCurrentProtectedUrl] = useState("");
+  const [showPasswordSetupModal, setShowPasswordSetupModal] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordSetupError, setPasswordSetupError] = useState("");
+
   const qrModalRef = useRef(null);
+
+  // Initialize password from localStorage
+  useEffect(() => {
+    const encryptedPassword = localStorage.getItem("hostPassword");
+    if (encryptedPassword) {
+      try {
+        const bytes = CryptoJS.AES.decrypt(encryptedPassword, 'xautrade-secret-key');
+        const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+        setHostPassword(decrypted);
+      } catch (err) {
+        console.error("Failed to decrypt password", err);
+      }
+    }
+  }, []);
+
+  // Save password to localStorage when changed
+  useEffect(() => {
+    if (hostPassword) {
+      const encrypted = CryptoJS.AES.encrypt(hostPassword, 'xautrade-secret-key').toString();
+      localStorage.setItem("hostPassword", encrypted);
+    }
+  }, [hostPassword]);
 
   const isPastMeeting = (meeting) => {
     return new Date(meeting.start_time) < new Date();
@@ -149,11 +183,57 @@ function Dashboard() {
     return () => clearTimeout(timeout);
   }, [copiedLink]);
 
-  const handleMeetingRedirect = (url, e) => {
+  const handleMeetingRedirect = (url, type, e) => {
     e.preventDefault();
-    setRedirectUrl(url);
-    setRedirectTimer(5);
-    setShowRedirectModal(true);
+    
+    if (type === 'join') {
+      // No password needed for join URLs
+      setRedirectUrl(url);
+      setRedirectTimer(5);
+      setShowRedirectModal(true);
+    } else {
+      // Host URL - check if password is set
+      if (hostPassword) {
+        setCurrentProtectedUrl(url);
+        setShowPasswordModal(true);
+      } else {
+        // If no password set, prompt to set one first
+        setPasswordSetupError("Please set a host password first");
+        setShowPasswordSetupModal(true);
+      }
+    }
+  };
+
+  const verifyPassword = (e) => {
+    e.preventDefault();
+    if (passwordInput === hostPassword) {
+      setRedirectUrl(currentProtectedUrl);
+      setRedirectTimer(5);
+      setShowPasswordModal(false);
+      setShowRedirectModal(true);
+      setPasswordInput("");
+      setPasswordError("");
+    } else {
+      setPasswordError("Incorrect password");
+    }
+  };
+
+  const handleSetPassword = (e) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setPasswordSetupError("Passwords don't match");
+      return;
+    }
+    if (newPassword.length < 4) {
+      setPasswordSetupError("Password must be at least 4 characters");
+      return;
+    }
+    
+    setHostPassword(newPassword);
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordSetupError("");
+    setShowPasswordSetupModal(false);
   };
 
   const generateShareableUrl = (meeting, type) => {
@@ -171,7 +251,8 @@ function Dashboard() {
       url: url,
       type: type === 'join' ? 'Join Meeting' : 'Host Meeting',
       topic: meeting.topic,
-      meetingId: meeting.id
+      meetingId: meeting.id,
+      requiresPassword: type !== 'join'
     });
   };
 
@@ -287,21 +368,11 @@ function Dashboard() {
     return grouped;
   };
 
-  const userCountry = countries.find((c) => c.id === user?.country_id);
-  const userState = userCountry?.states.find((s) => s.id === user?.state_id);
-
-  const groupedMeetings = groupMeetingsByDate();
-  const today = new Date().toISOString().split('T')[0];
-
-  // Enhanced download function with CSS fixes
   const downloadQRCode = async () => {
     if (!qrModalRef.current) return;
 
     try {
-      // 1. Create clone and position off-screen
       const modalClone = qrModalRef.current.cloneNode(true);
-
-      // 2. Remove text truncation styles from the clone
       const topicElement = modalClone.querySelector('.truncate');
       if (topicElement) {
         topicElement.style.whiteSpace = 'normal';
@@ -310,18 +381,15 @@ function Dashboard() {
         topicElement.style.display = 'block';
       }
 
-      // 3. Remove ALL buttons from the clone
       const buttons = modalClone.querySelectorAll('button');
       buttons.forEach(button => button.remove());
 
-      // 4. Position clone for capture
       modalClone.style.position = 'fixed';
       modalClone.style.left = '-9999px';
       modalClone.style.top = '0';
       modalClone.style.zIndex = '99999';
       document.body.appendChild(modalClone);
 
-      // 5. Replace unsupported color functions
       const replaceModernColors = (element) => {
         const computedStyle = window.getComputedStyle(element);
         ['color', 'background-color', 'border-color'].forEach(prop => {
@@ -335,11 +403,9 @@ function Dashboard() {
       replaceModernColors(modalClone);
       modalClone.querySelectorAll('*').forEach(replaceModernColors);
 
-      // 6. Wait for fonts to load
       await document.fonts.ready;
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // 7. Capture with html2canvas
       const canvas = await html2canvas(modalClone, {
         scale: 2,
         backgroundColor: '#000000',
@@ -348,7 +414,6 @@ function Dashboard() {
         allowTaint: true,
         ignoreElements: (el) => el.tagName === 'SCRIPT',
         onclone: (clonedDoc) => {
-          // Ensure all text is visible
           clonedDoc.querySelectorAll('*').forEach(el => {
             el.style.visibility = 'visible';
             el.style.opacity = '1';
@@ -356,10 +421,8 @@ function Dashboard() {
         }
       });
 
-      // 8. Clean up
       document.body.removeChild(modalClone);
 
-      // 9. Trigger download
       const link = document.createElement('a');
       link.download = `xautrade-meeting-${qrModal.meetingId}-${qrModal.topic.substring(0, 20).replace(/[^a-z0-9]/gi, '-')}.png`;
       link.href = canvas.toDataURL('image/png');
@@ -367,7 +430,6 @@ function Dashboard() {
 
     } catch (error) {
       console.error('Error:', error);
-      // Fallback to SVG only
       const svg = document.getElementById('qr-code-svg');
       const svgData = new XMLSerializer().serializeToString(svg);
       const img = new Image();
@@ -388,9 +450,9 @@ function Dashboard() {
       img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
     }
   };
+
   const shareQRCode = async () => {
     try {
-      // Convert logo to base64 for embedding
       const logoResponse = await fetch(logo);
       const logoBlob = await logoResponse.blob();
       const logoBase64 = await new Promise((resolve) => {
@@ -399,7 +461,6 @@ function Dashboard() {
         reader.readAsDataURL(logoBlob);
       });
   
-      // Create HTML content with bigger logo, QR code and clickable link in a card layout
       const shareContent = `
         <!DOCTYPE html>
         <html>
@@ -432,7 +493,7 @@ function Dashboard() {
               position: relative;
             }
             .logo {
-              height: 100px; /* Bigger logo */
+              height: 100px;
               margin: 30px auto 20px;
               display: block;
               opacity: 0.95;
@@ -472,6 +533,14 @@ function Dashboard() {
               transform: translateY(-2px);
               box-shadow: 0 6px 16px rgba(239, 191, 4, 0.4);
             }
+            .password-notice {
+              font-size: 14px;
+              color: #EFBF04;
+              margin-top: 10px;
+              padding: 8px;
+              background: rgba(239, 191, 4, 0.1);
+              border-radius: 4px;
+            }
           </style>
         </head>
         <body>
@@ -486,14 +555,22 @@ function Dashboard() {
                 ${document.getElementById('qr-code-svg').outerHTML}
               </div>
               
-              <a href="${qrModal.url}" class="join-btn">Tap to Join Meeting</a>
+              ${qrModal.requiresPassword ? `
+                <div class="password-notice">
+                  <svg class="h-4 w-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  Host password required
+                </div>
+              ` : ''}
+              
+              <a href="${qrModal.url}" class="join-btn">Tap to ${qrModal.type}</a>
             </div>
           </div>
         </body>
         </html>
       `;
   
-      // For native apps (WhatsApp, email, etc.)
       if (navigator.share) {
         try {
           const blob = new Blob([shareContent], { type: 'text/html' });
@@ -510,7 +587,6 @@ function Dashboard() {
         }
       }
   
-      // Fallback for browsers that don't support sharing files
       if (navigator.clipboard) {
         try {
           await navigator.clipboard.writeText(`Join ${qrModal.topic}: ${qrModal.url}`);
@@ -526,7 +602,6 @@ function Dashboard() {
         }
       }
   
-      // Ultimate fallback - just show the HTML in a new tab
       const newWindow = window.open('', '_blank');
       newWindow.document.write(shareContent);
       newWindow.document.close();
@@ -541,6 +616,7 @@ function Dashboard() {
       }
     }
   };
+
   const copyMeetingLink = async () => {
     try {
       await navigator.clipboard.writeText(qrModal.url);
@@ -550,6 +626,10 @@ function Dashboard() {
     }
   };
 
+  const userCountry = countries.find((c) => c.id === user?.country_id);
+  const userState = userCountry?.states.find((s) => s.id === user?.state_id);
+  const groupedMeetings = groupMeetingsByDate();
+  const today = new Date().toISOString().split('T')[0];
 
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-black to-gray-900">
@@ -588,6 +668,22 @@ function Dashboard() {
               <div className="p-1 sm:p-2 bg-gray-900 rounded">
                 <span className="block text-yellow-400">State</span>
                 <span className="font-medium text-yellow-100">{userState?.name || "N/A"}</span>
+              </div>
+              <div className="col-span-2 p-1 sm:p-2 bg-gray-900 rounded">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <span className="block text-yellow-400">Host Password</span>
+                    <span className="font-medium text-yellow-100">
+                      {hostPassword ? "••••••••" : "Not set"}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowPasswordSetupModal(true)}
+                    className="text-xs bg-yellow-600 hover:bg-yellow-500 text-black px-2 py-1 rounded"
+                  >
+                    {hostPassword ? "Change" : "Set"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -663,7 +759,6 @@ function Dashboard() {
                             d="M19 9l-7 7-7-7"
                           />
                         </svg>
-
                       </div>
 
                       {expandedMeetings[dateKey] && (
@@ -702,12 +797,11 @@ function Dashboard() {
                                           <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                                           </svg>
-
                                         </span>
                                       ) : (
                                         <a
                                           href="#"
-                                          onClick={(e) => handleMeetingRedirect(meeting.join_url, e)}
+                                          onClick={(e) => handleMeetingRedirect(meeting.join_url, 'join', e)}
                                           className="inline-flex items-center text-yellow-400 hover:text-yellow-300 hover:underline"
                                         >
                                           <span className="hidden sm:inline mr-1">Join Meeting</span>
@@ -715,7 +809,6 @@ function Dashboard() {
                                           <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                                           </svg>
-
                                         </a>
                                       )}
                                       <button
@@ -724,9 +817,8 @@ function Dashboard() {
                                         title="Copy join link"
                                       >
                                         <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
                                         </svg>
-
                                       </button>
                                       {copiedLink === `${meeting.id}-join` && (
                                         <span className="text-xs text-green-400 animate-pulse">Copied!</span>
@@ -742,12 +834,11 @@ function Dashboard() {
                                           <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                                           </svg>
-
                                         </span>
                                       ) : (
                                         <a
                                           href="#"
-                                          onClick={(e) => handleMeetingRedirect(meeting.formatted_info?.host_url || meeting.start_url, e)}
+                                          onClick={(e) => handleMeetingRedirect(meeting.formatted_info?.host_url || meeting.start_url, 'host', e)}
                                           className="inline-flex items-center text-yellow-400 hover:text-yellow-300 hover:underline"
                                         >
                                           <span className="hidden sm:inline mr-1">Host Meeting</span>
@@ -755,7 +846,6 @@ function Dashboard() {
                                           <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                                           </svg>
-
                                         </a>
                                       )}
                                       <button
@@ -764,9 +854,8 @@ function Dashboard() {
                                         title="Copy host link"
                                       >
                                         <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
                                         </svg>
-
                                       </button>
                                       {copiedLink === `${meeting.id}-host` && (
                                         <span className="text-xs text-green-400 animate-pulse">Copied!</span>
@@ -780,9 +869,8 @@ function Dashboard() {
                                       title="Copy dashboard share link"
                                     >
                                       <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
                                       </svg>
-
                                     </button>
                                     {copiedLink === `${meeting.id}-dashboard` && (
                                       <span className="text-xs text-green-400 animate-pulse ml-1">Copied!</span>
@@ -799,10 +887,9 @@ function Dashboard() {
                 </div>
               ) : (
                 <div className="text-center py-4 bg-gray-900 rounded">
-                  <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  <svg className="h-5 w-5 mx-auto text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                   </svg>
-
                   <p className="mt-2 text-xs sm:text-sm text-yellow-400">
                     {selectedDateView === "today"
                       ? "No meetings scheduled for today."
@@ -841,10 +928,9 @@ function Dashboard() {
                   onClick={() => setShowModal(false)}
                   className="text-yellow-400 hover:text-yellow-300"
                 >
-                  <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
                   </svg>
-
                 </button>
               </div>
 
@@ -878,10 +964,9 @@ function Dashboard() {
                         style={{ colorScheme: 'dark' }}
                       />
                       <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                        <svg className="h-3 w-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        <svg className="h-4 w-4 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                         </svg>
-
                       </div>
                     </div>
                   </div>
@@ -961,6 +1046,140 @@ function Dashboard() {
           </div>
         </div>
       )}
+
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-90">
+          <div className="relative bg-black rounded-lg shadow-xl w-full max-w-md mx-auto border border-yellow-600 p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-yellow-500">Host Meeting</h3>
+              <button
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setPasswordError("");
+                  setPasswordInput("");
+                }}
+                className="text-yellow-400 hover:text-yellow-300"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <form onSubmit={verifyPassword}>
+              <div className="mb-4">
+                <label className="block text-sm text-yellow-400 mb-2">Enter Host Password</label>
+                <input
+                  type="password"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-yellow-700 rounded-md text-sm bg-gray-900 text-yellow-100"
+                  placeholder="Password"
+                  autoFocus
+                />
+                {passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}
+              </div>
+              
+              <div className="flex justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPasswordModal(false);
+                    setPasswordError("");
+                    setPasswordInput("");
+                  }}
+                  className="px-4 py-2 border border-yellow-700 rounded-md text-sm font-medium text-yellow-400 hover:bg-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-black text-sm font-medium rounded-md"
+                >
+                  Verify
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showPasswordSetupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-90">
+          <div className="relative bg-black rounded-lg shadow-xl w-full max-w-md mx-auto border border-yellow-600 p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-yellow-500">
+                {hostPassword ? "Change Host Password" : "Set Host Password"}
+              </h3>
+              <button
+                onClick={() => {
+                  setShowPasswordSetupModal(false);
+                  setPasswordSetupError("");
+                  setNewPassword("");
+                  setConfirmPassword("");
+                }}
+                className="text-yellow-400 hover:text-yellow-300"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <form onSubmit={handleSetPassword}>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm text-yellow-400 mb-1">New Password</label>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 border border-yellow-700 rounded-md text-sm bg-gray-900 text-yellow-100"
+                    placeholder="Enter password"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-yellow-400 mb-1">Confirm Password</label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 border border-yellow-700 rounded-md text-sm bg-gray-900 text-yellow-100"
+                    placeholder="Confirm password"
+                  />
+                </div>
+                {passwordSetupError && <p className="text-red-500 text-xs">{passwordSetupError}</p>}
+              </div>
+              
+              <div className="mt-6 flex justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPasswordSetupModal(false);
+                    setPasswordSetupError("");
+                    setNewPassword("");
+                    setConfirmPassword("");
+                  }}
+                  className="px-4 py-2 border border-yellow-700 rounded-md text-sm font-medium text-yellow-400 hover:bg-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-yellow-600 hover:bg-yellow-500 text-black text-sm font-medium rounded-md"
+                >
+                  {hostPassword ? "Change Password" : "Set Password"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {qrModal.show && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-90">
           <div
@@ -971,7 +1190,6 @@ function Dashboard() {
               boxShadow: '0 0 20px rgba(239, 191, 4, 0.3)'
             }}
           >
-            {/* Logo Section */}
             <div className="flex flex-col items-center justify-center mb-4">
               <img src={logo} alt="Brand Logo" className="h-16 opacity-90 mb-2" />
               <span className="text-sm text-[#EFBF04]">
@@ -979,7 +1197,6 @@ function Dashboard() {
               </span>
             </div>
 
-            {/* QR Code Section */}
             <div className="flex justify-center mb-4 p-2 bg-black rounded border border-[#EFBF04]/30">
               <QRCodeSVG
                 id="qr-code-svg"
@@ -998,7 +1215,6 @@ function Dashboard() {
               />
             </div>
 
-            {/* Visible Meeting Link Section */}
             <div className="mb-4 group relative">
               <div className="flex items-center justify-center space-x-2">
                 <svg
@@ -1028,7 +1244,15 @@ function Dashboard() {
               </span>
             </div>
 
-            {/* Action Buttons */}
+            {qrModal.requiresPassword && (
+              <div className="mt-2 text-xs text-[#EFBF04]/70">
+                <svg className="h-4 w-4 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+                Host password required
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3 mb-4">
               <button
                 onClick={copyMeetingLink}
@@ -1062,7 +1286,7 @@ function Dashboard() {
             </div>
 
             <button
-              onClick={() => setQrModal({ show: false, url: "", type: "", topic: "", meetingId: null })}
+              onClick={() => setQrModal({ show: false, url: "", type: "", topic: "", meetingId: null, requiresPassword: false })}
               className="w-full border border-[#EFBF04] hover:bg-[#EFBF04]/10 text-[#EFBF04] font-medium py-2 rounded transition"
             >
               Close
@@ -1075,4 +1299,3 @@ function Dashboard() {
 }
 
 export default Dashboard;
-
