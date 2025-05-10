@@ -1206,13 +1206,7 @@ function Dashboard() {
                 includeMargin={false}
                 fgColor="#EFBF04"
                 bgColor="#000000"
-                imageSettings={{
-                  src: logo,
-                  height: 50,
-                  width: 50,
-                  excavate: true,
-                }}
-              />
+                 />
             </div>
 
             <div className="mb-4 group relative">
